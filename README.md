@@ -38,14 +38,15 @@ If the OSD shows `bad nem440.3c1` or `bad nem440.326`, the file has the wrong si
 1. Copy `releases/NGage_20261030.rbf` to `/media/fat/_Console/`.
 2. Copy `releases/MiSTer_ngage` to `/media/fat/`.
 3. Copy `releases/ngage_mon.bin` and `releases/ngage_patch.txt` to `/media/fat/games/NGage/`.
-4. Add these lines to the end of `/media/fat/MiSTer.ini`:
+4. Copy `releases/Presets/N-Gage` to `/media/fat/Presets/` and `releases/Filters/N-Gage` to `/media/fat/Filters/`.
+5. Add these lines to the end of `/media/fat/MiSTer.ini`:
 ```
 [NGage]
 main=MiSTer_ngage
 ```
-5. Put the firmware files in `/media/fat/games/NGage/`.
-6. Put game zips in `/media/fat/games/NGage/`. Subfolders wrok too. A zip holds what the game has on the root of the MMC card: the `system` folder and the other files.
-7. Start N-Gage from the Console menu and pick `Load game` in the OSD.
+6. Put the firmware files in `/media/fat/games/NGage/`.
+7. Put game zips in `/media/fat/games/NGage/`. Subfolders wrok too. A zip holds what the game has on the root of the MMC card: the `system` folder and the other files.
+8. Start N-Gage from the Console menu and pick `Load game` in the OSD.
 
 The rbf, `MiSTer_ngage`, `ngage_mon.bin` and `ngage_patch.txt` go together, so allways update them as a set.
 
@@ -95,6 +96,21 @@ Keyboard:
 | Reset | Restarts the phone |
 
 The phone clock follows the MiSTer time.
+
+---
+
+## Video Presets
+
+The core has six video presets. Pick one in the MiSTer menu under `Video processing`, `Load preset`, folder `N-Gage`.
+
+| Preset | Look |
+|--------|------|
+| No filter | Sharp pixels |
+| Smooth | Soft scaling |
+| Vert - LCD grid, Horz - LCD grid | Sharp pixels with the LCD grid |
+| Vert - Smooth + LCD grid, Horz - Smooth + LCD grid | Soft scaling with the LCD grid |
+
+Use the `Vert` or `Horz` preset that matches the Orientation option. `Smooth` needs `SharpBilinear_040.txt` from the stock MiSTer filters.
 
 ---
 
