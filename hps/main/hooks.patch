@@ -1,0 +1,177 @@
+diff --git a/Makefile b/Makefile
+index 233c5e5..2701b8a 100644
+--- a/Makefile
++++ b/Makefile
+@@ -36,6 +36,7 @@ C_SRC =   $(wildcard *.c) \
+ 					$(wildcard ./lib/zstd/lib/common/*.c) \
+ 					$(wildcard ./lib/zstd/lib/decompress/*.c) \
+           $(wildcard ./lib/libchdr/*.c) \
++          $(wildcard ./support/ngage/lib/*.c) \
+           lib/libco/arm.c
+ 
+ CPP_SRC = $(wildcard *.cpp) \
+diff --git a/fpga_io.cpp b/fpga_io.cpp
+index b64cfe5..f00c2ab 100644
+--- a/fpga_io.cpp
++++ b/fpga_io.cpp
+@@ -16,6 +16,7 @@
+ #include "menu.h"
+ #include "shmem.h"
+ #include "offload.h"
++#include "support/ngage/ngage.h"
+ 
+ #include "fpga_base_addr_ac5.h"
+ #include "fpga_manager.h"
+@@ -425,6 +426,8 @@ static int make_env(const char *name, const char *cfg)
+ 
+ int fpga_load_rbf(const char *name, const char *cfg, const char *xml)
+ {
++	// park the N-Gage monitor while the bridges are still up: after do_bridge(0) its window access hangs
++	ngage_unload();
+ 	OsdDisable();
+ 	static char path[1024];
+ 	int ret = 0;
+@@ -486,6 +489,7 @@ int fpga_load_rbf(const char *name, const char *cfg, const char *xml)
+ 						sz = *(uint32_t*)(((uint8_t*)buf) + 12);
+ 						p = (void*)(((uint8_t*)buf) + 16);
+ 					}
++					ngage_unload();
+ 					do_bridge(0);
+ 					ret = socfpga_load(p, sz);
+ 					if (ret)
+@@ -587,6 +591,7 @@ int fpga_get_hdmi_int()
+ 
+ void reboot(int cold)
+ {
++	ngage_unload();
+ 	sync();
+ 	fpga_core_reset(1);
+ 
+@@ -619,6 +624,7 @@ char *getappname()
+ 
+ void app_restart(const char *path, const char *xml, const char *exe)
+ {
++	ngage_unload();
+ 	sync();
+ 	fpga_core_reset(1);
+ 
+diff --git a/menu.cpp b/menu.cpp
+index 70ead70..f2ef2ec 100644
+--- a/menu.cpp
++++ b/menu.cpp
+@@ -2505,6 +2505,7 @@ void HandleUI(void)
+ 						}
+ 
+ 						if (is_psx()) fs_Options |= SCANO_NOZIP;
++						if (is_ngage()) fs_Options |= SCANO_NOZIP | (ngage_browse_zip(Selected_tmp) ? SCANO_NOENTER : 0);
+ 
+ 						if (!mgl->done) menustate = MENU_GENERIC_IMAGE_SELECTED;
+ 						else if (select) SelectFile(Selected_tmp, ext, fs_Options, fs_MenuSelect, fs_MenuCancel);
+@@ -2693,6 +2694,7 @@ void HandleUI(void)
+ 				}
+ 				else
+ 				{
++					if (is_ngage()) ngage_unload();
+ 					if (is_pce())
+ 					{
+ 						pcecd_set_image(0, "");
+@@ -2857,6 +2859,10 @@ void HandleUI(void)
+ 			{
+ 				marty_set_image(ioctl_index, selPath);
+ 			}
++			else if (is_ngage())
++			{
++				ngage_set_image(ioctl_index, selPath);
++			}
+ 			else
+ 			{
+ 				user_io_set_index(user_io_ext_idx(selPath, fs_pFileExt) << 6 | (menusub + 1));
+diff --git a/support.h b/support.h
+index 8204e4f..0f0f34a 100644
+--- a/support.h
++++ b/support.h
+@@ -81,3 +81,6 @@
+ 
+ // FM Towns Marty support
+ #include "support/marty/marty.h"
++
++// N-Gage hybrid support
++#include "support/ngage/ngage.h"
+diff --git a/user_io.cpp b/user_io.cpp
+index 1745a11..0c2afa2 100644
+--- a/user_io.cpp
++++ b/user_io.cpp
+@@ -430,6 +430,13 @@ char is_marty()
+ 	return (is_marty_type == 1);
+ }
+ 
++static int is_ngage_type = 0;
++char is_ngage()
++{
++	if (!is_ngage_type) is_ngage_type = ngage_core_ok() ? 1 : 2;
++	return (is_ngage_type == 1);
++}
++
+ static int is_saturn_type = 0;
+ char is_saturn()
+ {
+@@ -495,6 +502,7 @@ void user_io_read_core_name()
+ 	is_electron_type = 0;
+ 	is_saturn_type = 0;
+ 	is_marty_type = 0;
++	is_ngage_type = 0;
+ 	is_n64_type = 0;
+ 	is_uneon_type = 0;
+ 	core_name[0] = 0;
+@@ -1466,6 +1474,9 @@ void user_io_init(const char *path, const char *xml)
+ 	// Same for the NeXT ethernet bridge.
+ 	next_enet_stop();
+ 
++	// A cpu1 left offline by an N-Gage session comes back here, also after a crash of Main.
++	ngage_recover();
++
+ 	// we need to set the directory to where the XML file (MRA) is
+ 	// not the RBF. The RBF will be in arcade, which the user shouldn't
+ 	// browse
+@@ -1656,6 +1667,10 @@ void user_io_init(const char *path, const char *xml)
+ 				{
+ 					atari5200_init();
+ 				}
++				else if (is_ngage())
++				{
++					ngage_init();
++				}
+ 				else
+ 				{
+ 					const char *home = HomeDir();
+@@ -3487,6 +3502,10 @@ void user_io_poll()
+ 			{
+ 				if (mop < 0) break;
+       }
++			else if (int ngop = ngage_sd_service(disk, op, (uint32_t)lba, sz, ack))
++			{
++				if (ngop < 0) break;
++			}
+ 			else if (int a3op = a3_sd_service(disk, &sd_image[disk], op, lba, sz, ack))
+ 			{
+ 				if (a3op < 0) break;
+@@ -3984,6 +4003,7 @@ void user_io_poll()
+ 	if (is_pce()) pcecd_poll();
+ 	if (is_saturn()) saturn_poll();
+ 	if (is_marty()) marty_poll();
++	if (is_ngage()) ngage_poll();
+ 	if (is_cdi()) cdi_poll();
+ 	if (is_psx()) psx_poll();
+ 	if (is_neogeo_cd()) neocd_poll();
+diff --git a/user_io.h b/user_io.h
+index 3a26405..3c3a5bf 100644
+--- a/user_io.h
++++ b/user_io.h
+@@ -301,6 +301,7 @@ char is_atari800();
+ char is_atari5200();
+ char is_3do();
+ char is_marty();
++char is_ngage();
+ 
+ #define HomeDir(x) user_io_get_core_path(x)
+ #define CoreName user_io_get_core_name()
