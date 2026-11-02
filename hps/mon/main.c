@@ -995,7 +995,42 @@ static void aud_wr(void *c, uint32_t r, uint32_t v)
     win_wr(c, HYB_REG_OFF(r), v);
 }
 
-static const struct aud_io g_aio = { 0, aud_va2pa, aud_copy, aud_publish, aud_rd, aud_wr };
+static uint32_t aud_now(void *c)
+{
+    (void)c;
+    return rd32(GTIMER);
+}
+
+#if NGH_AUD_CAP
+_Static_assert(!(AUD_CAP_SIZE & (SEC - 1u)) && !(AUD_CAP_BASE & (SEC - 1u)), "capture takes whole sections");
+_Static_assert(AUD_CAP_BASE >= ALIAS_HI && AUD_CAP_BASE + AUD_CAP_SIZE - 1u <= PL_CORE_HI, "capture past RAM16, inside the core window");
+_Static_assert(VA_OF(AUD_CAP_BASE) >= RST_VA + SEC && VA_OF(AUD_CAP_BASE + AUD_CAP_SIZE) <= WIN_VA, "capture VA between RST_VA and WIN_VA");
+
+static void aud_cap_data(void *c, uint32_t off, uint32_t host, uint32_t n)
+{
+    uint32_t s = VA_OF(host), d = VA_OF(AUD_CAP_BASE) + off, a;
+
+    (void)c;
+    // runs right after aud_copy of the same bytes, whose L1 and L2 steps still hold
+    if (!((s | d | n) & 3u))
+        for (a = 0; a < n; a += 4u)
+            wr32(d + a, rd32(s + a));
+    else
+        for (a = 0; a < n; a++)
+            wr8(d + a, rd8(s + a));
+}
+
+static void aud_cap_word(void *c, uint32_t off, uint32_t v)
+{
+    (void)c;
+    wr32(VA_OF(AUD_CAP_BASE) + off, v);
+}
+
+static const struct aud_io g_aio = { 0, aud_va2pa, aud_copy, aud_publish, aud_rd, aud_wr, aud_now,
+                                     aud_cap_data, aud_cap_word };
+#else
+static const struct aud_io g_aio = { 0, aud_va2pa, aud_copy, aud_publish, aud_rd, aud_wr, aud_now };
+#endif
 
 static void aud_st(void)
 {
@@ -2092,6 +2127,9 @@ static void tick(struct frame *f)
     }
 #if NGH_LIM_PCARRY
     lim_snow(&g_lim, gtime());
+#endif
+#if NGH_LIM_AREL
+    g_lim.arel = aud_short(&g_aud);
 #endif
     if (a & TA_RESTART)
         cold_restart();

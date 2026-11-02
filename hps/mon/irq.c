@@ -317,6 +317,12 @@ _Static_assert(NGH_LIM_PCARRY_M_US <= 500u, "a margin of 0 to 500 us before the 
 #ifndef NGH_LIM_FORCE_TURBO
 #define NGH_LIM_FORCE_TURBO 0
 #endif
+#ifndef NGH_LIM_AREL
+#define NGH_LIM_AREL 0
+#endif
+#if NGH_LIM_AREL && !NGH_LIM_PCARRY
+#error "the audio relief lifts the release limiter's hold"
+#endif
 #ifndef NGH_LIM_RCK_US
 #define NGH_LIM_RCK_US  50u
 #endif
@@ -371,6 +377,9 @@ struct lim {
     uint64_t snow, sle, sla;
     int64_t pcar;
     uint32_t slv;
+#endif
+#if NGH_LIM_AREL
+    uint32_t arel, arp, arms;
 #endif
 };
 
@@ -448,6 +457,11 @@ void lim_reset(struct lim *l, uint32_t ent, uint32_t mon)
     l->sla = 0;
     l->pcar = 0;
     l->slv = 0;
+#endif
+#if NGH_LIM_AREL
+    l->arel = 0;
+    l->arp = 0;
+    l->arms = 0;
 #endif
 }
 
@@ -650,6 +664,30 @@ static void lim_pcar(struct lim *l, int64_t b)
     l->pcar = (int64_t)r;
     l->bal = 0;
 }
+
+#if NGH_LIM_AREL
+static uint32_t lim_arel(struct lim *l, uint32_t n)
+{
+    // a short stream lifts the frame hold, the budget stays
+    if (!l->arel) {
+        l->arp = 0;
+        return n;
+    }
+    l->arms++;
+    if (l->arp)
+        return 0;
+    l->arp = 1;
+    if (l->bal < 0)
+        l->bal = 0;
+    l->pcar = 0;
+    l->tas = LIM_TA_IDLE;
+    l->tak = 0;
+    l->tmk = 0;
+    l->taw = 0;
+    l->tpa = 0;
+    return 0;
+}
+#endif
 #endif
 #endif
 #endif
@@ -719,6 +757,9 @@ uint32_t lim_tick(struct lim *l, uint32_t ent, uint32_t mon, uint32_t status, ui
         l->zrun = 0;
     }
 #if NGH_LIM_FRAME_US
+#if NGH_LIM_AREL
+    n = lim_arel(l, n);
+#endif
     // the debit stays out of g and the sgi count; the floor keps two debits on top of the old one
     l->bal = (l->bal + b < cap ? l->bal + b : cap) - g - n * d;
 #if NGH_LIM_PCARRY

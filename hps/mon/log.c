@@ -551,7 +551,11 @@ static uint32_t wx_pk(uint32_t hi, uint32_t lo)
 static void lim_rows(const struct lim *l)
 {
     xrow(XR_LMEV, l->mev);
+#if NGH_LIM_AREL
+    xrow(XR_LMOD, (l->arms & 0x1FFFu) << 19 | l->ipm << 2 | l->armed << 1 | l->turbo);
+#else
     xrow(XR_LMOD, l->ipm << 2 | l->armed << 1 | l->turbo);
+#endif
 #if NGH_LIM_COST
     xrow(XR_LGIP, g_lc.gip);
 #if !NGH_PMU_CENSUS

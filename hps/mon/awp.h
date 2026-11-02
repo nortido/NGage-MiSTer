@@ -62,7 +62,7 @@
 // our plugin at the pcm site: r6 = D, O1 = [D + 0x10], frames returned so far
 #define AWP_D_O1        0x10u
 #define AWP_D_POS       0x15Cu
-// O1, the player policy object grown to 0x54 bytes
+// O1, the player policy object grown to 0x5c bytes
 #define AWP_O_PEND      0x38u
 #define AWP_O_CHUNK     0x3Cu
 #define AWP_O_CREDIT    0x44u

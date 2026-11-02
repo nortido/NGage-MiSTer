@@ -462,6 +462,11 @@ static void mmu_boot(void)
     // to the FPGA reader and to board memory tools
     for (pa = ALIAS_LO; pa < ALIAS_HI; pa += SEC)
         sh_window_set(&g_sh, VA_OF(pa), pa | (pa == PL_AUDIO_BASE || pa == PL_SCHK_BASE ? SEC_NC : SEC_WB) | SEC_XN);
+#if NGH_AUD_CAP
+    // past ALIAS_HI, so no alias_outer: the same attributes as the ring keep the dump readable from Linux
+    for (pa = AUD_CAP_BASE; pa < AUD_CAP_BASE + AUD_CAP_SIZE; pa += SEC)
+        sh_window_set(&g_sh, VA_OF(pa), pa | SEC_NC | SEC_XN);
+#endif
     // strongly-ordered: the PAHI write must reach the FPGA before the forward that depends on it
     for (pa = 0; pa < WIN_FWD_SPAN; pa += SEC)
         sh_window_set(&g_sh, WIN_VA + pa, (HYB_WIN_PHYS + pa) | SEC_SO | SEC_XN);
