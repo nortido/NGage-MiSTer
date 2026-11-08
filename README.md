@@ -48,6 +48,8 @@ main=MiSTer_ngage
 7. Put game zips in `/media/fat/games/NGage/`. Subfolders wrok too. A zip holds what the game has on the root of the MMC card: the `system` folder and the other files.
 8. Start N-Gage from the Console menu and pick `Load game` in the OSD.
 
+While the phone boots, the OSD shows `N-Gage: starting OS...` for a few seconds. If the phone OS does not start in 30 seconds, it shows `N-Gage: OS didn't start`. Then plase open an issue and attach `/tmp/ngl/fork.log`.
+
 The rbf, `MiSTer_ngage`, `ngage_mon.bin` and `ngage_patch.txt` go together, so allways update them as a set.
 
 Some games need shared libraries that a real MMC card had in `System\Libs`, for exmaple Pathway to Glory. Put them in `/media/fat/games/NGage/System/Libs/` and the core adds them to the game card when the game needs them.

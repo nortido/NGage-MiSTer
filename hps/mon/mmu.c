@@ -19,6 +19,11 @@
 #define WIN_VA          (MON_VA_BASE + 0x08000000u)
 #define WIN_FWD_SPAN    0x18000000u
 #define SEC             0x00100000u
+#if NGH_XDIAG
+#define XD_VA           (MON_VA_BASE + 0x04200000u)
+_Static_assert(!NGH_AUD_CAP, "the capture ring maps the same VA");
+_Static_assert(XD_VA + (ALIAS_HI - ALIAS_LO) <= WIN_VA, "NC view below the forward window");
+#endif
 
 #define D_SH_L1         (PL_MONDATA_BASE + 0x0000u)
 #define D_DEV_L2        (PL_MONDATA_BASE + 0x8000u)
@@ -31,6 +36,7 @@
 #define SEC_WB          (0x4406u | DOM_BITS)
 #define SEC_OWB         (0x5406u | DOM_BITS)
 #define SEC_XN          0x10u
+#define SEC_APX         0x8000u
 #define SEC_SO          (0x0402u | DOM_BITS)
 #define SEC_NC          (0x1402u | DOM_BITS)
 #define PG_DEV          0x17u
@@ -466,6 +472,11 @@ static void mmu_boot(void)
     // past ALIAS_HI, so no alias_outer: the same attributes as the ring keep the dump readable from Linux
     for (pa = AUD_CAP_BASE; pa < AUD_CAP_BASE + AUD_CAP_SIZE; pa += SEC)
         sh_window_set(&g_sh, VA_OF(pa), pa | SEC_NC | SEC_XN);
+#endif
+#if NGH_XDIAG
+    // APX with AP=01, PL1 read-only: a stray guest store faults into trap_win_abort like the unmapped release VA
+    for (pa = ALIAS_LO; pa < ALIAS_HI; pa += SEC)
+        sh_window_set(&g_sh, XD_VA + (pa - ALIAS_LO), pa | SEC_NC | SEC_APX | SEC_XN);
 #endif
     // strongly-ordered: the PAHI write must reach the FPGA before the forward that depends on it
     for (pa = 0; pa < WIN_FWD_SPAN; pa += SEC)

@@ -25,6 +25,7 @@
 #define _Static_assert static_assert
 extern "C" {
 #include "common/hyb_regs.h"
+#include "lib/ngl_bootmsg.h"
 #include "lib/ngl_cdrv.h"
 #include "lib/ngl_fat.h"
 #include "lib/ngl_fork.h"
@@ -66,6 +67,7 @@ static struct ngl_hw hw;
 static struct ngl_io io;
 static int io_state;
 static struct ngl_fork fk;
+static struct ngl_bootmsg bm;
 static struct ngl_sink_mem img;
 static int own;
 static char *mon_buf;
@@ -186,6 +188,8 @@ static void info(const char *fmt, ...)
 	snprintf(line, sizeof(line), "N-Gage: %s", msg);
 	flog("%s", line);
 	Info(line, 4000);
+	// a C:/save/other box must not be overwritten by the boot message
+	ngl_bootmsg_defer(&bm, GetTimer(0), 4000);
 }
 
 // Info shows nothing while the OSD menu is open, so ngage_poll shows it again until a select or the unload
@@ -1404,6 +1408,7 @@ static void select_body(int index, const char *path)
 void ngage_set_image(int index, const char *path)
 {
 	cid_timer = 0;
+	ngl_bootmsg_stop(&bm);
 	// while a guest runs the fork waits for a quiet C: first, then ngage_poll runs the body on NGL_FE_SELECT
 	if (ngl_fork_select_req(&fk, index, path)) return;
 	select_body(index, path);
@@ -1523,6 +1528,7 @@ void ngage_poll()
 			cdrv_run = 1;
 			flog("cdrv: start guard slot %d", fk.cdrv_slot);
 		}
+		ngl_bootmsg_begin(&bm, GetTimer(0), p->rd32(p->ctx, NGL_ST(lcd_fps_idx)));
 		break;
 	case NGL_FE_LIVE:
 		info("%s", fk.err);
@@ -1595,6 +1601,40 @@ void ngage_poll()
 		select_body(fk.sel_index, fk.sel_path);
 		break;
 	}
+	if (fk.phase != NGL_FK_RUN) ngl_bootmsg_stop(&bm);
+	else if (bm.active)
+	{
+		uint32_t st = p->rd32(p->ctx, NGL_ST(state));
+		uint32_t gp = p->rd32(p->ctx, NGL_ST(gproc));
+		uint32_t idx = p->rd32(p->ctx, NGL_ST(lcd_fps_idx));
+		uint32_t k = (idx - 1u) & 63u;
+		uint32_t w = p->rd32(p->ctx, NGL_ST(lcd_fps) + (k & ~1u) * 2u);
+		uint32_t fps = (k & 1u) ? w >> 16 : w & 0xFFFFu;
+
+		switch (ngl_bootmsg_step(&bm, GetTimer(0), st, gp, idx, fps))
+		{
+		case NGL_BM_START:
+			Info(NGL_BM_START_TEXT, NGL_BM_START_SHOW_MS);
+			if (bm.n == 1) flog("boot: start message shown");
+			break;
+		case NGL_BM_STALL:
+			Info(NGL_BM_STALL_TEXT, NGL_BM_STALL_SHOW_MS);
+			if (bm.n == 1)
+				flog("boot: no OS after %u ms, state %u heartbeat %u fatal 0x%08x, message: OS didn't start",
+					(unsigned)bm.ms, (unsigned)st, (unsigned)p->rd32(p->ctx, NGL_ST(heartbeat)),
+					(unsigned)p->rd32(p->ctx, NGL_ST(fatal)));
+			break;
+		case NGL_BM_UP:
+			flog("boot: OS up after %u ms", (unsigned)bm.ms);
+			if (bm.stall_n) Info(NGL_BM_UP_TEXT, NGL_BM_UP_SHOW_MS);
+			break;
+		// Main has no call that drops an Info box without closing a menu, so it gets the same text for 1 ms
+		case NGL_BM_HIDE:
+			Info(NGL_BM_START_TEXT, 1);
+			flog("boot: game on screen after %u ms", (unsigned)bm.ms);
+			break;
+		}
+	}
 	if (cdrv_run && cdrv_on) ngl_cdrv_observe(&cdrv_sch, p->rd32(p->ctx, NGL_ST(cdrv_gen)), (uint32_t)GetTimer(0));
 	cdrv_flush("sched", 1);
 }
@@ -1604,6 +1644,7 @@ void ngage_unload()
 	const struct ngl_io *p;
 
 	cid_timer = 0;
+	ngl_bootmsg_stop(&bm);
 	p = io_get();
 	ngl_fork_select_drop(&fk);
 	if (p) stop(p, "unload");

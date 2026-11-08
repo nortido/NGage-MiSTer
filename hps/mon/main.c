@@ -15,6 +15,7 @@
 #include "rumble.h"
 #include "light.h"
 #include "pmuc.h"
+#include "xdiag.h"
 
 #include "trap.c"
 #include "mmu.c"
@@ -22,6 +23,9 @@
 #include "dma.c"
 #include "log.c"
 #include "fwd.c"
+#if NGH_XDIAG
+#include "xdiag.c"
+#endif
 
 #if NGH_LIM_COST
 #if NGH_LIM_XHOLD
@@ -1236,12 +1240,136 @@ static uint32_t forward(uint32_t fmode, uint32_t vec_off)
     return 1;
 }
 
+#if NGH_XDIAG
+#define XD_REC ((volatile uint32_t *)VA_OF(XD_PA))
+
+static struct xd g_xd;
+static struct xd_in g_xdi;
+static uint32_t g_xdw[XD_NW];
+
+static void xd_arm(void)
+{
+    unsigned i;
+
+    for (i = 0; i < XD_NW; i++)
+        XD_REC[i] = 0;
+    XD_REC[0] = XD_MAGIC;
+    dsb();
+}
+
+static uint32_t xd_par(uint32_t va)
+{
+    MCR15(0, 7, 8, 0, va);
+    isb();
+    return MRC15(0, 7, 4, 0);
+}
+
+static void __attribute__((noinline)) xd_hook(uint32_t kind, uint32_t pc, uint32_t vfsr, uint32_t vfar)
+{
+    struct xd_in *in = &g_xdi;
+    struct pam_res pr;
+    uint32_t r[7], bm, va, par, host, *p;
+    unsigned i;
+
+    if (!xd_note(&g_xd)) {
+        XD_REC[1] = g_xd.nfwd;
+        dsb();
+        return;
+    }
+    in->kind = kind;
+    in->pc = pc;
+    in->vfar = vfar;
+    in->vfsr = vfsr;
+    in->hb = g_hb;
+    in->dfsr = MRC15(0, 5, 0, 0);
+    in->dfar = MRC15(0, 6, 0, 0);
+    in->ifsr = MRC15(0, 5, 0, 1);
+    in->ifar = MRC15(0, 6, 0, 2);
+    for (i = 0; i < 13; i++)
+        in->fr[i] = g_f->r[i];
+    bank_get(M_FIQ, r);
+    for (i = 0; i < 5; i++)
+        in->fiq[i] = r[i];
+    in->gm = g_f->spsr & 0x1Fu;
+    bm = bank_mode(in->gm);
+    bank_get(bm, r);
+    in->bsp = r[5];
+    in->blr = r[6];
+    in->bspsr = bm == M_SYS ? 0 : bank_spsr(bm);
+    in->ssp = scratch_sp();
+    in->emode = g_emode;
+    in->cpsr = g_f->spsr;
+    in->gctl = g_cp.control;
+    in->gttb = g_cp.ttbr;
+    in->gdacr = g_cp.dacr;
+    in->sctlr = MRC15(0, 1, 0, 0);
+    in->actlr = MRC15(0, 1, 0, 1);
+    in->dacr = MRC15(0, 3, 0, 0);
+    xd_desc(&g_sh, 0, &in->desc[0], &in->desc[1]);
+    xd_desc(&g_sh, 0x0A000000u, &in->desc[2], &in->desc[3]);
+    in->pok = 0;
+    // before any maintenance: the clean below writes a dirty line back, so a guest view that differs from the NC view
+    // read a stale clean line
+    for (i = 0; i < XD_NPROBE; i++) {
+        p = in->prb[i];
+        va = xd_probe_va(in, i);
+        par = xd_par(va);
+        host = 0;
+        if (!(par & 1u)) {
+            host = (par & 0xFFFFF000u) | (va & 0xFFFu);
+        } else if (!(g_cp.control & CTRL_M)) {
+            pr = pamap_page(va, 0, &g_sh.pam);
+            if (pr.kind != PAM_FWD)
+                host = pr.host_pa;
+        }
+        p[0] = va;
+        p[1] = par;
+        p[2] = host;
+        p[3] = 0;
+        p[4] = 0;
+        // a translation with the PL1 read right: the load cannot abort, and the slots have no read side effects
+        if (!(par & 1u) && alias_ok(host)) {
+            p[3] = rd32(va);
+            in->pok |= 1u << i;
+        }
+    }
+    // the TA_FLUSH pair, clean only: an aborted sweep sets bit3 here, a later TA_FLUSH or l2_chk may still park
+    dcache_clean_all();
+    in->l2ms = l2_clean();
+    // an NC load may still hit a clean L1 or L2 line (mismatched attributes): drop it from both levels first
+    for (i = 0; i < XD_NPROBE; i++) {
+        p = in->prb[i];
+        host = p[2];
+        if (alias_ok(host)) {
+            MCR15(0, 7, 14, 1, VA_OF(host) & ~31u);
+            dsb();
+            if (cache_sweep_ci(&g_dc, host, 4u))
+                g_l2abt = 1;
+            p[4] = rd32(XD_VA + (host - ALIAS_LO));
+            in->pok |= 1u << (8u + i);
+        }
+    }
+    in->xflags = (g_l2abt ? 0x8u : 0) | (g_ident ? 0x10u : 0) | ((g_dc.flags & CACHE_OUTER) ? 0x20u : 0);
+    in->memcfg = g_sh.memcfg;
+    xd_fill(g_xdw, &g_xd, in);
+    for (i = 1; i < XD_NW; i++)
+        if (i != 2)
+            XD_REC[i] = g_xdw[i];
+    dsb();
+    XD_REC[2] = g_xdw[2];
+    dsb();
+}
+#endif
+
 static uint32_t forward_und(uint32_t pc)
 {
     uint32_t gm = g_f->spsr & 0x1Fu;
 
     ST->traps[NGST_TRAP_UNDEF] = ++g_trap[NGST_TRAP_UNDEF];
     ev_put(EVK_ABT, EVABT_U, pc, 0, 0, 0);
+#if NGH_XDIAG
+    xd_hook(3u, pc, 0, 0);
+#endif
     xc_fwd_note(&g_xc, XC_FWD_UND, pc, gr_lr(gm), pc, 0, gm, g_lim.ticks);
     return forward(M_UND, 0x04u);
 }
@@ -1255,6 +1383,9 @@ static uint32_t forward_abt(int pabt, uint32_t pc, uint32_t vfsr, uint32_t vfar)
         g_cp.far = vfar;
     }
     ev_put(EVK_ABT, pabt ? EVABT_P : EVABT_D, pc, vfar, vfsr, 0);
+#if NGH_XDIAG
+    xd_hook(pabt ? 2u : 1u, pc, vfsr, vfar);
+#endif
     xc_fwd_note(&g_xc, pabt ? XC_FWD_PABT : XC_FWD_DABT, pc, gr_lr(gm), vfar, vfsr, gm, g_lim.ticks);
     return forward(M_ABT, trap_vec_abt(pabt));
 }
@@ -2510,6 +2641,9 @@ void mon_main(void)
     isb();
     g_t0 = gtime();
     st_init();
+#if NGH_XDIAG
+    xd_arm();
+#endif
     g_ucyc = read_cost();
     g_pmcy = pmu_cost();
     lim_init();

@@ -131,19 +131,25 @@ bank_spsr_put:
     msr     cpsr_c, r2
     bx      lr
 
+@ banked SPSRs too: the ARMv5 boot code leaves FIQ with movs after writing only SPSR_fc, and a power-on E bit
+@ there made the guest load big-endian (forum black screen)
 .globl guest_enter
 guest_enter:
     mov     r2, #0
     cps     #0x1B
+    msr     spsr_cxsf, r1
     mov     sp, r2
     mov     lr, r2
     cps     #0x17
+    msr     spsr_cxsf, r1
     mov     sp, r2
     mov     lr, r2
     cps     #0x12
+    msr     spsr_cxsf, r1
     mov     sp, r2
     mov     lr, r2
     cps     #0x11
+    msr     spsr_cxsf, r1
     mov     r8, r2
     mov     r9, r2
     mov     r10, r2
