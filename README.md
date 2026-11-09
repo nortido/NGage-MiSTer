@@ -132,8 +132,6 @@ There are no savestates.
 - Bluetooth multiplayer reaches the host and join screens, but there is no real link.
 - N-Gage Arena and other online parts show a connection error.
 - There are no key click sounds.
-- FIFA 2005 can close itself during a match after about two minutes.
-- Rare full freezes need a power cycle, mostly after swiching games many times.
 
 ---
 

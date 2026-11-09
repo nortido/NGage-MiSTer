@@ -69,6 +69,7 @@ int ngl_fork_image(struct ngl_fork *f, const void *mon, uint32_t mon_len, const 
 void ngl_fork_eject(struct ngl_fork *f);
 int ngl_fork_step(struct ngl_fork *f, const struct ngl_io *io, int mgl_done, uint32_t dt_ms);
 int ngl_fork_stop(struct ngl_fork *f, const struct ngl_io *io);
+int ngl_fork_switch(struct ngl_fork *f, const struct ngl_io *io);
 int ngl_fork_start(const struct ngl_io *io, struct ngl_fork *f, char *err, size_t errcap);
 void ngl_fork_rom(struct ngl_fork *f);
 int ngl_fork_reload(const struct ngl_fork *f);

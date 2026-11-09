@@ -1322,14 +1322,16 @@ static void load_rom(const char *tag)
 	flog("%s: %s done", tag, rom);
 }
 
-static int stop(const struct ngl_io *p, const char *tag)
+static int stop(const struct ngl_io *p, const char *tag, int keep)
 {
 	char state[16] = "-", reason[16] = "-";
-	int rc = ngl_fork_stop(&fk, p);
+	int rc = keep ? ngl_fork_switch(&fk, p) : ngl_fork_stop(&fk, p);
+	int held = (p->rd32(p->ctx, PL_RSTMGR_MPUMODRST) & PL_MPUMODRST_CPU1) != 0;
 
 	if (fk.stop_state != NGL_FORK_UNREAD) snprintf(state, sizeof(state), "%u", (unsigned)fk.stop_state);
 	if (fk.stop_reason != NGL_FORK_UNREAD) snprintf(reason, sizeof(reason), "%u", (unsigned)fk.stop_reason);
-	flog("%s: stop rc %s phase %d state %s park_reason %s", tag, ngl_strerror(rc), fk.stop_phase, state, reason);
+	flog("%s: stop rc %s phase %d state %s park_reason %s cpu1 %s", tag, ngl_strerror(rc), fk.stop_phase, state, reason,
+		held ? "held" : "linux");
 	return rc;
 }
 
@@ -1359,7 +1361,7 @@ static void select_body(int index, const char *path)
 
 	if (p)
 	{
-		int rc = stop(p, "select");
+		int rc = stop(p, "select", 1);
 		if (rc) info("stop: %s", ngl_strerror(rc));
 	}
 	ngage_save_flush("select");
@@ -1563,8 +1565,8 @@ void ngage_poll()
 			// flog may set errno, which the saves note below reports
 			errno = e;
 		}
-		// after a good park no monitor owns PAHI and cpu1 is Linux's; the saves are already written, so a fault
-		// in the screen write loses nothing
+		// after a good park no monitor owns PAHI and cpu1 is held in reset; the saves are already written, so a
+		// fault in the screen write loses nothing
 		if (!fk.rc)
 		{
 			unsigned long t0 = GetTimer(0);
@@ -1647,7 +1649,7 @@ void ngage_unload()
 	ngl_bootmsg_stop(&bm);
 	p = io_get();
 	ngl_fork_select_drop(&fk);
-	if (p) stop(p, "unload");
+	if (p) stop(p, "unload", 0);
 	ngage_save_flush("unload");
 	sav_drops_log();
 }

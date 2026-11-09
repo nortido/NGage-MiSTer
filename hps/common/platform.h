@@ -50,6 +50,10 @@
 #define PL_RSTMGR_BRGMODRST     0xFFD0501Cu
 #define PL_BRGMODRST_RESET      0x7u
 
+// SCU CPU Power Status: one byte per CPU, cpu1 in [9:8], 0b11 = powered off (no coherency requests)
+#define PL_SCU_PWRST            0xFFFEC008u
+#define PL_SCU_PWRST_CPU1       0x00000300u
+
 // fpgamgr regs as read by Main fpga_io.cpp is_fpga_ready(0): GPIO_EXT_PORTA init_done (bit 2) and STAT mode == user (4)
 #define PL_FPGAMGR_STAT         0xFF706000u
 #define PL_FPGAMGR_GPIO_EXT     0xFF706850u

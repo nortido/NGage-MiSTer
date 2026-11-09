@@ -226,7 +226,7 @@ static int fk_exit_step(struct ngl_fork *f, const struct ngl_io *io, uint32_t dt
     if (!fk_quiet_step(f, io, dt_ms, &f->exit_ms, &f->exit_quiet, &f->exit_gen, &f->exit_mmc, NGL_FORK_EXIT_CAP_MS))
         return NGL_FE_NONE;
     f->stop_phase = f->phase;
-    f->rc = ngl_mon_park(io);
+    f->rc = ngl_mon_park_keep(io);
     f->stop_state = io->rd32(io->ctx, NGL_ST(state));
     f->stop_reason = io->rd32(io->ctx, NGL_ST(park_reason));
     f->phase = NGL_FK_DONE;
@@ -299,7 +299,7 @@ int ngl_fork_step(struct ngl_fork *f, const struct ngl_io *io, int mgl_done, uin
     return NGL_FE_FAIL;
 }
 
-int ngl_fork_stop(struct ngl_fork *f, const struct ngl_io *io)
+static int fk_stop(struct ngl_fork *f, const struct ngl_io *io, int keep)
 {
     int rc;
 
@@ -307,14 +307,24 @@ int ngl_fork_stop(struct ngl_fork *f, const struct ngl_io *io)
     f->stop_state = NGL_FORK_UNREAD;
     f->stop_reason = NGL_FORK_UNREAD;
     if (f->phase == NGL_FK_RUN) {
-        rc = ngl_mon_park(io);
+        rc = keep ? ngl_mon_park_keep(io) : ngl_mon_park(io);
         f->stop_state = io->rd32(io->ctx, NGL_ST(state));
         f->stop_reason = io->rd32(io->ctx, NGL_ST(park_reason));
     } else {
-        rc = ngl_cpu1_recover(io);
+        rc = keep ? ngl_cpu1_keep(io) : ngl_cpu1_recover(io);
     }
     f->phase = NGL_FK_IDLE;
     return rc;
+}
+
+int ngl_fork_stop(struct ngl_fork *f, const struct ngl_io *io)
+{
+    return fk_stop(f, io, 0);
+}
+
+int ngl_fork_switch(struct ngl_fork *f, const struct ngl_io *io)
+{
+    return fk_stop(f, io, 1);
 }
 
 // the monitor patches the ROM in DDR in place: a ROM load is pristine until the next start

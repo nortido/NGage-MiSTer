@@ -11,6 +11,9 @@ enum {
     NGL_C1RST_MS = 100
 };
 
+// Linux RAM ends below the U-Boot env (mem=511M)
+#define NGL_LINUX_RAM_END 0x1FF00000u
+
 _Static_assert(sizeof(struct ngst) <= PL_C1RST_FLAG - PL_STATUS_BASE, "D41 words outside NGST");
 
 static const char *const ngl_err_str[NGL_NERR] = {
@@ -59,14 +62,19 @@ int ngl_mon_live(const struct ngl_io *io)
     return io->rd32(io->ctx, NGL_ST(heartbeat)) != hb;
 }
 
-static int ngl_online_is(const struct ngl_io *io, char want)
+static int ngl_online_ch(const struct ngl_io *io)
 {
     char b[8];
     int n = io->sys_read(io->ctx, NGL_CPU1_ONLINE, b, sizeof b);
 
-    if (n < 1)
-        return -1;
-    return b[0] == want;
+    return n < 1 ? -1 : (unsigned char)b[0];
+}
+
+static int ngl_online_is(const struct ngl_io *io, char want)
+{
+    int c = ngl_online_ch(io);
+
+    return c < 0 ? -1 : c == want;
 }
 
 static int ngl_cpu1_hold(const struct ngl_io *io)
@@ -76,29 +84,102 @@ static int ngl_cpu1_hold(const struct ngl_io *io)
     return io->wr32(io->ctx, PL_RSTMGR_MPUMODRST, v | PL_MPUMODRST_CPU1) ? NGL_E_REG : NGL_OK;
 }
 
+static int ngl_held(const struct ngl_io *io)
+{
+    return (io->rd32(io->ctx, PL_RSTMGR_MPUMODRST) & PL_MPUMODRST_CPU1) != 0;
+}
+
+// a failed /dev/mem map reads all ones: the field is unknown then, never taken as 00
+static int ngl_scu_clear(const struct ngl_io *io)
+{
+    uint32_t v = io->rd32(io->ctx, PL_SCU_PWRST);
+
+    if (v == 0xFFFFFFFFu) {
+        ngl_say(io, "cpu1 scu field unknown");
+        return NGL_E_REG;
+    }
+    if (!(v & PL_SCU_PWRST_CPU1))
+        return NGL_OK;
+    if (io->wr32(io->ctx, PL_SCU_PWRST, v & ~PL_SCU_PWRST_CPU1) ||
+        (io->rd32(io->ctx, PL_SCU_PWRST) & PL_SCU_PWRST_CPU1)) {
+        ngl_say(io, "cpu1 scu field not cleared");
+        return NGL_E_REG;
+    }
+    return NGL_OK;
+}
+
+// a core marked powered off gets no snoops while the reset edge lands; the monitor boot and Linux online
+// need the field back at 00 (lim_pick)
+static int ngl_scu_hold(const struct ngl_io *io)
+{
+    uint32_t s = io->rd32(io->ctx, PL_SCU_PWRST), base, r;
+    int rc = NGL_OK;
+
+    if (s == 0xFFFFFFFFu) {
+        ngl_say(io, "cpu1 scu field unknown");
+        return NGL_E_REG;
+    }
+    base = s & ~PL_SCU_PWRST_CPU1;
+    if (io->wr32(io->ctx, PL_SCU_PWRST, base | PL_SCU_PWRST_CPU1)) {
+        ngl_say(io, "cpu1 scu guard failed, plain hold");
+        return ngl_cpu1_hold(io);
+    }
+    r = io->rd32(io->ctx, PL_SCU_PWRST);
+    if (r == 0xFFFFFFFFu) {
+        ngl_say(io, "cpu1 scu field unknown");
+        rc = NGL_E_REG;
+    } else if ((r & PL_SCU_PWRST_CPU1) != PL_SCU_PWRST_CPU1) {
+        ngl_say(io, "cpu1 scu guard failed, plain hold");
+    } else {
+        io->sleep_ms(io->ctx, 1);
+    }
+    if (ngl_cpu1_hold(io))
+        rc = NGL_E_REG;
+    if (io->wr32(io->ctx, PL_SCU_PWRST, base) || (io->rd32(io->ctx, PL_SCU_PWRST) & PL_SCU_PWRST_CPU1)) {
+        ngl_say(io, "cpu1 scu field not restored");
+        rc = NGL_E_REG;
+    }
+    return rc;
+}
+
+static int ngl_tramp_ok(const struct ngl_io *io);
+static int ngl_tramp_chain_ok(const struct ngl_io *io);
+
 int ngl_cpu1_take(const struct ngl_io *io, uint32_t entry, int force)
 {
     uint32_t v;
-    int on;
+    int on, held, fast, kept = 0;
 
     if (!force && ngl_mon_live(io))
         return NGL_E_LIVE;
     if (io->set_affinity(io->ctx, 0))
         return NGL_E_AFFINITY;
-    on = ngl_online_is(io, '1');
+    on = ngl_online_ch(io);
     if (on < 0)
         return NGL_E_SYSFS;
-    // cpu1 may still be on its way into WFI after the offline write returns; Linux's online 1 resets it at once too
-    if (on) {
-        if (io->sys_write(io->ctx, NGL_CPU1_ONLINE, "0"))
-            return NGL_E_SYSFS;
-        io->sleep_ms(io->ctx, NGL_SETTLE_MS);
-    }
-    if (io->sys_write(io->ctx, NGL_CPU1_ONLINE, "1") || io->sys_write(io->ctx, NGL_CPU1_ONLINE, "0"))
-        return NGL_E_SYSFS;
-    io->sleep_ms(io->ctx, NGL_SETTLE_MS);
-    if (ngl_cpu1_hold(io))
+    if (ngl_scu_clear(io))
         return NGL_E_REG;
+    // a core held since a kept park never rejoined Linux, so it needs no reset edge, only a trampoline
+    held = on == '0' && ngl_held(io);
+    fast = held && ngl_tramp_ok(io) && ngl_tramp_chain_ok(io);
+    if (!fast) {
+        // cpu1 may still be on its way into WFI after the offline write returns; Linux's online 1 resets it at once too
+        if (on == '1') {
+            if (io->sys_write(io->ctx, NGL_CPU1_ONLINE, "0"))
+                return NGL_E_SYSFS;
+            io->sleep_ms(io->ctx, NGL_SETTLE_MS);
+        }
+        // Linux's boot or last-return trampoline still at PA 0 makes the online 1/0 cycle redundant
+        kept = !held && ngl_tramp_ok(io) && ngl_tramp_chain_ok(io);
+        if (!kept) {
+            ngl_say(io, held ? "cpu1 held, no trampoline, hotplug cycle" : "cpu1 no trampoline, hotplug cycle");
+            if (io->sys_write(io->ctx, NGL_CPU1_ONLINE, "1") || io->sys_write(io->ctx, NGL_CPU1_ONLINE, "0"))
+                return NGL_E_SYSFS;
+            io->sleep_ms(io->ctx, NGL_SETTLE_MS);
+        }
+        if (ngl_scu_hold(io))
+            return NGL_E_REG;
+    }
     // a return that died inside its c1rst window leaves the flag set: start.S would never init the monitor
     if (io->wr32(io->ctx, PL_C1RST_FLAG, 0))
         return NGL_E_MEM;
@@ -109,6 +190,10 @@ int ngl_cpu1_take(const struct ngl_io *io, uint32_t entry, int force)
     v = io->rd32(io->ctx, PL_RSTMGR_MPUMODRST);
     if (io->wr32(io->ctx, PL_RSTMGR_MPUMODRST, v & ~PL_MPUMODRST_CPU1))
         return NGL_E_REG;
+    if (fast)
+        ngl_say(io, "cpu1 held, no hotplug cycle");
+    else if (kept)
+        ngl_say(io, "cpu1 trampoline ok, no hotplug cycle");
     return NGL_OK;
 }
 
@@ -131,7 +216,7 @@ static int ngl_return_body(const struct ngl_io *io)
     int attempt;
 
     for (attempt = 0; attempt < 2; attempt++) {
-        if (ngl_cpu1_hold(io))
+        if (ngl_cpu1_hold(io) || ngl_scu_clear(io))
             return NGL_E_REG;
         if (attempt)
             io->sleep_ms(io->ctx, NGL_RETRY_MS);
@@ -197,6 +282,23 @@ static int ngl_tramp_ok(const struct ngl_io *io)
     return 1;
 }
 
+// word 0x8 subtracts PAGE_OFFSET, word 0x1C is the VA of socfpga_cpu1start_addr; a bad VA is never read outside
+// Linux RAM
+static int ngl_tramp_chain_ok(const struct ngl_io *io)
+{
+    uint32_t sub = io->rd32(io->ctx, 0x8u), rot, imm, po, pa;
+
+    if ((sub & 0xFFFFF000u) != 0xE2422000u)
+        return 0;
+    rot = (sub >> 8 & 0xFu) * 2u;
+    imm = sub & 0xFFu;
+    po = rot ? imm >> rot | imm << (32u - rot) : imm;
+    pa = io->rd32(io->ctx, 0x1Cu) - po;
+    if ((pa & 3u) || pa >= NGL_LINUX_RAM_END)
+        return 0;
+    return io->rd32(io->ctx, pa) == PL_SYSMGR_CPU1STARTADDR;
+}
+
 // a park ack means irq_hw_park restored the GIC; a monitor image without the marker has no entry
 static int ngl_back_body(const struct ngl_io *io, int parked)
 {
@@ -217,7 +319,7 @@ static int ngl_parked(const struct ngl_io *io)
     return io->rd32(io->ctx, NGL_ST(state)) == NGST_STATE_PARKED;
 }
 
-static int ngl_park_body(const struct ngl_io *io)
+static int ngl_park_body(const struct ngl_io *io, int keep)
 {
     int i, acked = 0, rc;
 
@@ -231,6 +333,11 @@ static int ngl_park_body(const struct ngl_io *io)
     }
     if (!acked)
         ngl_say(io, ngl_strerror(NGL_E_NO_PARK_ACK));
+    // a parked core stays held in reset; online stays 0 and Linux never runs it again until a core exit
+    if (acked && keep) {
+        io->sleep_ms(io->ctx, NGL_SETTLE_MS);
+        return ngl_cpu1_hold(io);
+    }
     rc = ngl_back_body(io, acked);
     if (rc)
         return rc;
@@ -245,7 +352,12 @@ int ngl_cpu1_return(const struct ngl_io *io)
 
 int ngl_mon_park(const struct ngl_io *io)
 {
-    return ngl_online_is(io, '0') == 1 ? ngl_park_body(io) : NGL_E_CPU1_LINUX;
+    return ngl_online_is(io, '0') == 1 ? ngl_park_body(io, 0) : NGL_E_CPU1_LINUX;
+}
+
+int ngl_mon_park_keep(const struct ngl_io *io)
+{
+    return ngl_online_is(io, '0') == 1 ? ngl_park_body(io, 1) : NGL_E_CPU1_LINUX;
 }
 
 int ngl_cpu1_recover(const struct ngl_io *io)
@@ -257,6 +369,13 @@ int ngl_cpu1_recover(const struct ngl_io *io)
     if (!off)
         return NGL_OK;
     if (!(io->rd32(io->ctx, NGL_BRGMODRST) & NGL_BRG_RESET) && ngl_mon_live(io))
-        return ngl_park_body(io);
+        return ngl_park_body(io, 0);
     return ngl_back_body(io, ngl_parked(io));
+}
+
+int ngl_cpu1_keep(const struct ngl_io *io)
+{
+    if (ngl_online_is(io, '0') == 1 && ngl_held(io) && ngl_parked(io))
+        return NGL_OK;
+    return ngl_cpu1_recover(io);
 }

@@ -44,6 +44,8 @@ int ngl_mon_live(const struct ngl_io *io);
 int ngl_cpu1_take(const struct ngl_io *io, uint32_t entry, int force);
 int ngl_cpu1_return(const struct ngl_io *io);
 int ngl_mon_park(const struct ngl_io *io);
+int ngl_mon_park_keep(const struct ngl_io *io);
 int ngl_cpu1_recover(const struct ngl_io *io);
+int ngl_cpu1_keep(const struct ngl_io *io);
 
 #endif
