@@ -170,7 +170,7 @@ int ngl_cpu1_take(const struct ngl_io *io, uint32_t entry, int force)
             io->sleep_ms(io->ctx, NGL_SETTLE_MS);
         }
         // Linux's boot or last-return trampoline still at PA 0 makes the online 1/0 cycle redundant
-        kept = !held && ngl_tramp_ok(io) && ngl_tramp_chain_ok(io);
+        kept = !held && (on == '0' || on == '1') && ngl_tramp_ok(io) && ngl_tramp_chain_ok(io);
         if (!kept) {
             ngl_say(io, held ? "cpu1 held, no trampoline, hotplug cycle" : "cpu1 no trampoline, hotplug cycle");
             if (io->sys_write(io->ctx, NGL_CPU1_ONLINE, "1") || io->sys_write(io->ctx, NGL_CPU1_ONLINE, "0"))
@@ -266,8 +266,8 @@ static void ngl_c1rst(const struct ngl_io *io)
         (void)io->wr32(io->ctx, PL_C1RST_FLAG, 0);
 }
 
-// a released core 1 fetches from PA 0: Linux's headsmp.S secondary_trampoline (LE) from the take's online cycle
-// must still be there; word 2 holds PAGE_OFFSET and is not checked
+// a released core 1 fetches from PA 0: Linux's headsmp.S secondary_trampoline (LE) from its last cpu1 online
+// (boot, a return or the take's fallback cycle) must still be there; word 2 holds PAGE_OFFSET and is not checked
 static int ngl_tramp_ok(const struct ngl_io *io)
 {
     static const uint32_t w[][2] = {
@@ -342,6 +342,16 @@ static int ngl_park_body(const struct ngl_io *io, int keep)
     if (rc)
         return rc;
     return acked ? NGL_OK : NGL_E_NO_PARK_ACK;
+}
+
+const char *ngl_cpu1_state(const struct ngl_io *io)
+{
+    int on;
+
+    if (ngl_held(io))
+        return "held";
+    on = ngl_online_ch(io);
+    return on == '1' ? "linux" : on == '0' ? "offline" : "unknown";
 }
 
 int ngl_cpu1_return(const struct ngl_io *io)

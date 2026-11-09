@@ -1326,12 +1326,11 @@ static int stop(const struct ngl_io *p, const char *tag, int keep)
 {
 	char state[16] = "-", reason[16] = "-";
 	int rc = keep ? ngl_fork_switch(&fk, p) : ngl_fork_stop(&fk, p);
-	int held = (p->rd32(p->ctx, PL_RSTMGR_MPUMODRST) & PL_MPUMODRST_CPU1) != 0;
 
 	if (fk.stop_state != NGL_FORK_UNREAD) snprintf(state, sizeof(state), "%u", (unsigned)fk.stop_state);
 	if (fk.stop_reason != NGL_FORK_UNREAD) snprintf(reason, sizeof(reason), "%u", (unsigned)fk.stop_reason);
 	flog("%s: stop rc %s phase %d state %s park_reason %s cpu1 %s", tag, ngl_strerror(rc), fk.stop_phase, state, reason,
-		held ? "held" : "linux");
+		ngl_cpu1_state(p));
 	return rc;
 }
 
